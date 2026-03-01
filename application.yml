@@ -1,0 +1,137 @@
+# ═══════════════════════════════════════════════════════════
+#  EGX‑AI :: API Gateway — application.yml
+# ═══════════════════════════════════════════════════════════
+
+server:
+  port: 8080
+  # Forward real client IP when behind a reverse proxy / load-balancer
+  forward-headers-strategy: native
+
+spring:
+  application:
+    name: egx-ai-gateway
+
+  # ── OAuth2 Resource Server ──────────────────────────────
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Must match the `iss` claim inside tokens issued by Keycloak.
+          # Override via KEYCLOAK_ISSUER_URI env-var in Docker Compose.
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/EGX_ALPHA}
+          # JWKS URI is auto-derived from issuer-uri (/.well-known/openid-configuration)
+          # Explicit override only needed if Keycloak sits behind a proxy with a different hostname:
+          # jwk-set-uri: ${KEYCLOAK_ISSUER_URI}/protocol/openid-connect/certs
+
+  # ── Spring Cloud Gateway ────────────────────────────────
+  cloud:
+    gateway:
+
+      # Auto-register routes for every Eureka service as /serviceId/**
+      discovery:
+        locator:
+          enabled: true
+          lower-case-service-id: true
+
+      # ── Static Routes ────────────────────────────────────
+      routes:
+
+        # ── Stocks Service ──
+        - id: stocks-service
+          uri: lb://stocks-service          # lb:// = Eureka load-balanced
+          predicates:
+            - Path=/api/v1/stocks/**
+          filters:
+            - StripPrefix=0
+            - name: RequestRateLimiter
+              args:
+                redis-rate-limiter.replenishRate: 50
+                redis-rate-limiter.burstCapacity: 100
+                key-resolver: "#{@ipKeyResolver}"
+
+        # ── News Service ──
+        - id: news-service
+          uri: lb://news-service
+          predicates:
+            - Path=/api/v1/news/**
+          filters:
+            - StripPrefix=0
+
+        # ── Recommendation Service ──
+        - id: recommendation-service
+          uri: lb://recommendation-service
+          predicates:
+            - Path=/api/v1/recommendations/**
+          filters:
+            - StripPrefix=0
+
+        # ── Notification Service ──
+        - id: notification-service
+          uri: lb://notification-service
+          predicates:
+            - Path=/api/v1/notifications/**
+          filters:
+            - StripPrefix=0
+
+        # ── Scraping Service ── (internal only — remove from prod if not needed)
+        - id: scraping-service
+          uri: lb://scraping-service
+          predicates:
+            - Path=/api/v1/scraping/**
+          filters:
+            - StripPrefix=0
+
+      # ── Global Filters ───────────────────────────────────
+      default-filters:
+        # Propagate X-Correlation-ID (handled by CorrelationIdFilter bean)
+        - DedupeResponseHeader=Access-Control-Allow-Origin Access-Control-Allow-Credentials
+
+      # ── Timeouts ─────────────────────────────────────────
+      httpclient:
+        connect-timeout: 3000   # ms
+        response-timeout: 15s
+
+# ── Eureka Client ──────────────────────────────────────────
+eureka:
+  instance:
+    prefer-ip-address: true
+    instance-id: ${spring.application.name}:${server.port}
+  client:
+    service-url:
+      defaultZone: ${EUREKA_URI:http://eureka:8761/eureka/}
+    fetch-registry: true
+    register-with-eureka: true
+
+# ── Actuator / Observability ───────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,gateway
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true     # /actuator/health/liveness + /actuator/health/readiness
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0    # 100% in dev — reduce in production
+
+# ── Logging ───────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.egxai: DEBUG
+    org.springframework.cloud.gateway: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} | %-5level | %logger{36} | cid=%X{X-Correlation-ID} | %msg%n"
+
+# ── Custom Gateway Properties ──────────────────────────────
+gateway:
+  cors:
+    allowed-origins:
+      - http://localhost:3000
+      - https://egxai.example.com

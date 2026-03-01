@@ -1,0 +1,120 @@
+EGX‑AI Platform — Architecture Diagram (Text)
+═══════════════════════════════════════════════════════════════════════════════
+
+
+ ┌─────────────────────────────────────────────────────────────────────────┐
+ │                         EXTERNAL CLIENTS                                │
+ │              Web App · Mobile App · Third-party Systems                 │
+ └─────────────────────────────────┬───────────────────────────────────────┘
+                                   │  HTTPS  +  Bearer JWT
+                                   ▼
+ ╔═════════════════════════════════════════════════════════════════════════╗
+ ║                              Keycloak                                   ║
+ ║                    OAuth2 / OIDC Authorization Server                   ║
+ ║   Realm: EGX_ALPHA   │   Port: 8081   │   Roles: USER · ANALYST · ADMIN ║
+ ╚═════════════════════════════════╤═══════════════════════════════════════╝
+                                   │  JWKS (cached) + Token Introspection
+                                   ▼
+ ╔═════════════════════════════════════════════════════════════════════════╗
+ ║                           API GATEWAY                                   ║
+ ║                      Spring Cloud Gateway · Port 8080                   ║
+ ║                                                                         ║
+ ║   ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────────┐  ║
+ ║   │ JWT Validate │  │  Rate Limiting  │  │  Correlation-ID Inject   │  ║
+ ║   │  (local)     │  │  Redis Bucket   │  │  X-Correlation-ID Header │  ║
+ ║   └──────────────┘  └─────────────────┘  └──────────────────────────┘  ║
+ ║                                                                         ║
+ ║   ┌──────────────┐  ┌─────────────────┐  ┌──────────────────────────┐  ║
+ ║   │ CORS Policy  │  │ Eureka lb://    │  │  Request/Response Log    │  ║
+ ║   │  Enforced    │  │ Load-Balanced   │  │  + Zipkin Tracing        │  ║
+ ║   └──────────────┘  └─────────────────┘  └──────────────────────────┘  ║
+ ╚══════════╤══════════════════╤══════════════════════╤═════════════════════╝
+            │                  │                      │
+            │  lb://           │  lb://               │  lb://
+            ▼                  ▼                      ▼
+ ┌──────────────────┐ ┌──────────────────┐  ┌──────────────────────────────┐
+ │  STOCK SERVICE   │ │  NEWS SERVICE    │  │     SCRAPING SERVICE         │
+ │  /api/v1/stocks  │ │  /api/v1/news    │  │  /api/v1/scraping            │
+ │  Spring Boot     │ │  Spring Boot     │  │  Spring Boot + Jsoup         │
+ │  TimescaleDB     │ │  PostgreSQL      │  │  Scheduled + On-demand       │
+ └────────┬─────────┘ └────────┬─────────┘  └──────────────┬───────────────┘
+          │                    │                            │
+          │  stock.price.updated  news.published            │ raw.data.scraped
+          └──────────────────────┴────────────────────────────────────────────┐
+                                                                              │
+ ╔════════════════════════════════════════════════════════════════════════════▼══╗
+ ║                              Apache Kafka                                     ║
+ ║                          Event Streaming Backbone                             ║
+ ║                                                                               ║
+ ║  Topics:                                                                      ║
+ ║    • stock.price.updated     (key: symbol,  value: PriceEvent JSON)           ║
+ ║    • news.published          (key: newsId,  value: NewsEvent JSON)            ║
+ ║    • alert.triggered         (key: userId,  value: AlertEvent JSON)           ║
+ ║    • raw.data.scraped        (key: source,  value: RawDataEvent JSON)         ║
+ ╚══════╤═══════════════════════════╤═══════════════════════════════════════════╝
+        │                           │
+        ▼                           ▼
+ ┌──────────────────────┐  ┌──────────────────────────────────────────────────┐
+ │  RECOMMENDATION SVC  │  │            NOTIFICATION SERVICE                  │
+ │  Spring Boot + DJL   │  │  Spring Boot + JavaMail                          │
+ │  HuggingFace Models  │  │                                                  │
+ │  • Content ranking   │  │  • Email alerts (price movement > threshold)     │
+ │  • Article scoring   │  │  • Digest newsletters (daily/weekly)             │
+ └──────────────────────┘  └──────────────────────────────────────────────────┘
+
+
+ ════════════════════════════  PYTHON ENGINE  ══════════════════════════════════
+
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │                        NeoWave Engine (Python)                           │
+ │                         FastAPI · Port 8000                              │
+ │                                                                          │
+ │   ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌────────────┐  │
+ │   │ NeoWave      │  │ Tactical     │  │ Risk Engine  │  │ Backtester │  │
+ │   │ Engine       │  │ Engine       │  │ (ATR-based)  │  │ + Metrics  │  │
+ │   └──────────────┘  └──────────────┘  └──────────────┘  └────────────┘  │
+ │                                                                          │
+ │   Worker (async)  ──►  Redis cache  ──►  Results available via API       │
+ └──────────────────────────────────────────────────────────────────────────┘
+
+
+ ══════════════════════════  SHARED INFRASTRUCTURE  ════════════════════════════
+
+ ┌──────────────┐  ┌────────────────────────┐  ┌────────────────────────────┐
+ │ Eureka Server│  │    TimescaleDB (PG)    │  │          Redis 7            │
+ │  Port: 8761  │  │  OHLCV + Time Series  │  │  Cache + Rate-Limit Bucket  │
+ │  Service Reg │  │  Flyway Migrations    │  │  Port: 6379                 │
+ └──────────────┘  └────────────────────────┘  └────────────────────────────┘
+
+ ┌──────────────────────────────────────────────────────────────────────────┐
+ │                        Observability Stack                               │
+ │   Prometheus (9090)  →  Grafana (3001)  │  Zipkin Tracing (9411)        │
+ └──────────────────────────────────────────────────────────────────────────┘
+
+
+═══════════════════════════════════════════════════════════════════════════════
+ REQUEST FLOW (numbered)
+═══════════════════════════════════════════════════════════════════════════════
+
+ 1.  Client sends  HTTP + Bearer <JWT>  to Gateway :8080
+ 2.  Gateway validates JWT signature using locally cached Keycloak JWKS
+ 3.  Rate-limit bucket checked in Redis (per client IP)
+ 4.  X-Correlation-ID injected (generated or forwarded)
+ 5.  Route resolved via Eureka lb:// to healthy service instance
+ 6.  Microservice re-validates JWT claims/roles (defense-in-depth)
+ 7.  Business logic executes → Kafka event published if state changed
+ 8.  Downstream consumers (Notification, Recommendation) react asynchronously
+ 9.  Response returns through Gateway with X-Correlation-ID in headers
+
+═══════════════════════════════════════════════════════════════════════════════
+ SECURITY LAYERS
+═══════════════════════════════════════════════════════════════════════════════
+
+ Layer 1 — Network:   TLS everywhere (HTTPS + internal mTLS in production)
+ Layer 2 — AuthN:     Keycloak JWT (RS256, short-lived 5 min access tokens)
+ Layer 3 — AuthZ:     Gateway blocks unauthenticated requests
+ Layer 4 — Service:   Each service re-checks JWT roles independently
+ Layer 5 — Rate:      Redis token-bucket limits per IP (50 req/s burst 100)
+ Layer 6 — CORS:      Gateway enforces allowed origins list
+
+═══════════════════════════════════════════════════════════════════════════════
